@@ -37,6 +37,7 @@ const DemandChart = () => {
   });
 
   const [date, setDate] = useState('');
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -69,6 +70,16 @@ const DemandChart = () => {
     };
 
     fetchData();
+
+    const handleResize = () => {
+      setWindowWidth(window.innerWidth);
+    };
+
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
   }, []);
 
   const options = {
@@ -101,11 +112,11 @@ const DemandChart = () => {
         },
       },
     },
+    maintainAspectRatio: false, // This helps in making the chart responsive
   };
 
   return (
-    <div>
-      <h2>MW Demand for the Latest Day</h2>
+    <div style={{ position: 'relative', height: '60vh', width: '100%' }}>
       <Line data={chartData} options={options} />
     </div>
   );
