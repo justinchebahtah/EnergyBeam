@@ -3,8 +3,7 @@ from flask import Blueprint, current_app, jsonify
 from datetime import datetime, timedelta
 
 from .utils import (
-    fetch_latest_data_from_s3,
-    load_aws_credentials,
+    fetch_latest_data_from_db,
     load_model,
     make_predictions,
     prepare_features,
@@ -23,21 +22,8 @@ def home():
 
 @main.route("/api/display-today")
 def display_today():
-    # Load AWS credentials
-    config = load_aws_credentials()
-
-    # Fetch the latest data from S3
-    s3 = boto3.client(
-        "s3",
-        aws_access_key_id=config["aws_access_key_id"],
-        aws_secret_access_key=config["aws_secret_access_key"],
-        region_name=config["region"],
-    )
-    df = fetch_latest_data_from_s3(
-        s3,
-        "caisoscraperbucket0001",
-        "raw/combined_CAISO_load_demand_data_weekly_catchup.csv",
-    )
+    # Fetch the latest data from DB
+    df = fetch_latest_data_from_db()
 
     # Convert pandas DataFrame to Spark DataFrame and preprocess
     spark = current_app.spark
@@ -45,11 +31,11 @@ def display_today():
 
     # Get the latest 24 hours of data
     latest_time_str = spark_df.agg({"INTERVALSTARTTIME_GMT": "max"}).collect()[0][0]
-    
+
     # Assuming the INTERVALSTARTTIME_GMT is in 'yyyy-MM-ddTHH:mm:ss-00:00' format
     latest_time = datetime.strptime(latest_time_str, '%Y-%m-%dT%H:%M:%S%z')
     start_time = latest_time - timedelta(hours=24)
-    
+
     recent_df = spark_df.filter(spark_df["INTERVALSTARTTIME_GMT"] > start_time.strftime('%Y-%m-%dT%H:%M:%S%z'))
 
     # Collect data to Python list
@@ -58,24 +44,10 @@ def display_today():
 
     return jsonify(response_data)
 
-
 @main.route("/api/predict")
 def predict():
-    # Load AWS credentials
-    config = load_aws_credentials()
-
-    # Fetch the latest data from S3
-    s3 = boto3.client(
-        "s3",
-        aws_access_key_id=config["aws_access_key_id"],
-        aws_secret_access_key=config["aws_secret_access_key"],
-        region_name=config["region"],
-    )
-    df = fetch_latest_data_from_s3(
-        s3,
-        "caisoscraperbucket0001",
-        "raw/combined_CAISO_load_demand_data_weekly_catchup.csv",
-    )
+    # Fetch the latest data from DB
+    df = fetch_latest_data_from_db()
 
     # Convert pandas DataFrame to Spark DataFrame and preprocess
     spark = current_app.spark

@@ -1,6 +1,7 @@
 import json
 import os
 
+from sqlalchemy import create_engine
 import matplotlib.pyplot as plt
 import pandas as pd
 from pyspark.ml.feature import StandardScaler, VectorAssembler
@@ -21,6 +22,26 @@ from pyspark.sql.functions import (
 from pyspark.sql.window import Window
 
 
+def load_db_credentials():
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    with open(config_path) as config_file:
+        config = json.load(config_file)
+    return config
+
+
+def get_db_connection():
+    config = load_db_credentials()
+    engine = create_engine(f"postgresql://{config['db_user']}:{config['db_password']}@{config['db_host']}/{config['db_name']}")
+    return engine
+
+
+def fetch_latest_data_from_db():
+    engine = get_db_connection()
+    query = "SELECT * FROM caiso_load_demand ORDER BY INTERVALSTARTTIME_GMT DESC LIMIT 24"
+    df = pd.read_sql(query, con=engine)
+    return df
+
+"""
 def load_aws_credentials():
     config_path = os.path.join(os.path.dirname(__file__), "config.json")
     with open(config_path) as config_file:
@@ -32,7 +53,7 @@ def fetch_latest_data_from_s3(s3_client, bucket, key):
     obj = s3_client.get_object(Bucket=bucket, Key=key)
     df = pd.read_csv(obj["Body"])
     return df
-
+"""
 
 def preprocess_data(spark, df):
     spark_df = spark.createDataFrame(df)
@@ -61,7 +82,7 @@ def preprocess_data(spark, df):
         "MovingAvg7Days", avg(col("MW")).over(window_spec.rowsBetween(-24 * 7, 0))
     )
 
-    # Calculate median values for imputation
+    # Calculate median values for NULL value replacement
     median_prev_day = spark_df.select(percentile_approx("PrevDayLoad", 0.5)).collect()[
         0
     ][0]
@@ -75,7 +96,7 @@ def preprocess_data(spark, df):
         percentile_approx("MovingAvg7Days", 0.5)
     ).collect()[0][0]
 
-    # Fill PrevHourLoad with current value if it's null
+    # Fill PrevHourLoad with current value if it's NULL
     spark_df = spark_df.withColumn(
         "PrevHourLoad",
         when(spark_df["PrevHourLoad"].isNull(), spark_df["MW"]).otherwise(
