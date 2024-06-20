@@ -1,7 +1,6 @@
 import json
 import os
 
-from sqlalchemy import create_engine
 import matplotlib.pyplot as plt
 import pandas as pd
 from pyspark.ml.feature import StandardScaler, VectorAssembler
@@ -20,66 +19,71 @@ from pyspark.sql.functions import (
     when,
 )
 from pyspark.sql.window import Window
+from sqlalchemy import create_engine
 
-
-def load_db_credentials():
-    config_path = os.path.join(os.path.dirname(__file__), "config.json")
-    with open(config_path) as config_file:
-        config = json.load(config_file)
-    return config
+""""
+def get_db_connection():
+    db_uri = os.getenv('SQLALCHEMY_DATABASE_URI')
+    engine = create_engine(db_uri)
+    return engine
+"""
 
 
 def get_db_connection():
-    config = load_db_credentials()
-    engine = create_engine(f"postgresql://{config['db_user']}:{config['db_password']}@{config['db_host']}/{config['db_name']}")
+    # Hardcoding the database URI for testing purposes
+    db_uri = "postgresql://justinchebahtah@localhost/energybeam_test"
+    engine = create_engine(db_uri)
     return engine
 
 
 def fetch_latest_data_from_db():
     engine = get_db_connection()
-    query = "SELECT * FROM caiso_load_demand ORDER BY INTERVALSTARTTIME_GMT DESC LIMIT 24"
+    query = """
+        SELECT * FROM caiso_load
+        WHERE tac_area_name = 'CA ISO-TAC'
+        ORDER BY interval_start_time DESC
+        LIMIT 392
+    """
     df = pd.read_sql(query, con=engine)
+    df = df.drop(columns=["predicted"])  # Drop the 'predicted' column
+    print(df.head())  # Print first few rows
+    print(df.dtypes)  # Print data types of columns
     return df
 
-"""
-def load_aws_credentials():
-    config_path = os.path.join(os.path.dirname(__file__), "config.json")
-    with open(config_path) as config_file:
-        config = json.load(config_file)
-    return config
-
-
-def fetch_latest_data_from_s3(s3_client, bucket, key):
-    obj = s3_client.get_object(Bucket=bucket, Key=key)
-    df = pd.read_csv(obj["Body"])
-    return df
-"""
 
 def preprocess_data(spark, df):
+    # Convert pandas DataFrame to Spark DataFrame
     spark_df = spark.createDataFrame(df)
-    spark_df = spark_df.withColumn("TAC_AREA_NAME", trim(spark_df["TAC_AREA_NAME"]))
-    spark_df = spark_df.filter(spark_df["TAC_AREA_NAME"] == "CA ISO-TAC")
-    spark_df = spark_df.withColumn("Hour", hour(col("INTERVALSTARTTIME_GMT")))
-    spark_df = spark_df.withColumn("DayOfWeek", dayofweek(col("INTERVALSTARTTIME_GMT")))
-    spark_df = spark_df.withColumn("Month", month(col("INTERVALSTARTTIME_GMT")))
-    spark_df = spark_df.withColumn(
-        "WeekOfYear", weekofyear(col("INTERVALSTARTTIME_GMT"))
-    )
+
+    # Trim and filter
+    spark_df = spark_df.withColumn("tac_area_name", trim(spark_df["tac_area_name"]))
+
+    # Filter for CA ISO-TAC
+    spark_df = spark_df.filter(spark_df["tac_area_name"] == "CA ISO-TAC")
+
+    # Add columns for hour, day of week, month, etc.
+    spark_df = spark_df.withColumn("Hour", hour(col("interval_start_time")))
+    spark_df = spark_df.withColumn("DayOfWeek", dayofweek(col("interval_start_time")))
+    spark_df = spark_df.withColumn("Month", month(col("interval_start_time")))
+    spark_df = spark_df.withColumn("WeekOfYear", weekofyear(col("interval_start_time")))
     spark_df = spark_df.withColumn(
         "IsWeekend", when(col("DayOfWeek").isin([1, 7]), 1).otherwise(0)
     )
 
-    window_spec = Window.partitionBy("TAC_AREA_NAME").orderBy("INTERVALSTARTTIME_GMT")
-    spark_df = spark_df.withColumn("PrevHourLoad", lag(col("MW")).over(window_spec))
-    spark_df = spark_df.withColumn("PrevDayLoad", lag(col("MW"), 24).over(window_spec))
+    # Define window spec
+    window_spec = Window.partitionBy("tac_area_name").orderBy("interval_start_time")
+
+    # Add lag and moving average columns
+    spark_df = spark_df.withColumn("PrevHourLoad", lag(col("mw")).over(window_spec))
+    spark_df = spark_df.withColumn("PrevDayLoad", lag(col("mw"), 24).over(window_spec))
     spark_df = spark_df.withColumn(
-        "PrevWeekLoad", lag(col("MW"), 24 * 7).over(window_spec)
+        "PrevWeekLoad", lag(col("mw"), 24 * 7).over(window_spec)
     )
     spark_df = spark_df.withColumn(
-        "MovingAvg3Hours", avg(col("MW")).over(window_spec.rowsBetween(-3, 0))
+        "MovingAvg3Hours", avg(col("mw")).over(window_spec.rowsBetween(-3, 0))
     )
     spark_df = spark_df.withColumn(
-        "MovingAvg7Days", avg(col("MW")).over(window_spec.rowsBetween(-24 * 7, 0))
+        "MovingAvg7Days", avg(col("mw")).over(window_spec.rowsBetween(-24 * 7, 0))
     )
 
     # Calculate median values for NULL value replacement
@@ -96,10 +100,22 @@ def preprocess_data(spark, df):
         percentile_approx("MovingAvg7Days", 0.5)
     ).collect()[0][0]
 
+    # Check for Null median values
+    if any(
+        median is None
+        for median in [
+            median_prev_day,
+            median_prev_week,
+            median_moving_avg_3_hours,
+            median_moving_avg_7_days,
+        ]
+    ):
+        raise ValueError("One or more median values are None")
+
     # Fill PrevHourLoad with current value if it's NULL
     spark_df = spark_df.withColumn(
         "PrevHourLoad",
-        when(spark_df["PrevHourLoad"].isNull(), spark_df["MW"]).otherwise(
+        when(spark_df["PrevHourLoad"].isNull(), spark_df["mw"]).otherwise(
             spark_df["PrevHourLoad"]
         ),
     )
@@ -112,21 +128,6 @@ def preprocess_data(spark, df):
             "MovingAvg7Days": median_moving_avg_7_days,
         }
     )
-
-    # Print the median values for sanity check
-    print(f"Median PrevDayLoad: {median_prev_day}")
-    print(f"Median PrevWeekLoad: {median_prev_week}")
-    print(f"Median MovingAvg3Hours: {median_moving_avg_3_hours}")
-    print(f"Median MovingAvg7Days: {median_moving_avg_7_days}")
-
-    # Print the filled values for sanity check
-    spark_df.select(
-        "PrevHourLoad",
-        "PrevDayLoad",
-        "PrevWeekLoad",
-        "MovingAvg3Hours",
-        "MovingAvg7Days",
-    ).show(20)
 
     return spark_df
 
@@ -165,64 +166,3 @@ def make_predictions(model, scaled_df):
     predictions = predictions.select("prediction").collect()
     predictions = [row["prediction"] for row in predictions]
     return predictions
-
-
-def preprocess_data_with_custom_prev_hour_load(spark, df, prev_hour_load_value):
-    spark_df = spark.createDataFrame(df)
-    spark_df = spark_df.withColumn("TAC_AREA_NAME", trim(spark_df["TAC_AREA_NAME"]))
-    spark_df = spark_df.filter(spark_df["TAC_AREA_NAME"] == "CA ISO-TAC")
-    spark_df = spark_df.withColumn("Hour", hour(col("INTERVALSTARTTIME_GMT")))
-    spark_df = spark_df.withColumn("DayOfWeek", dayofweek(col("INTERVALSTARTTIME_GMT")))
-    spark_df = spark_df.withColumn("Month", month(col("INTERVALSTARTTIME_GMT")))
-    spark_df = spark_df.withColumn(
-        "WeekOfYear", weekofyear(col("INTERVALSTARTTIME_GMT"))
-    )
-    spark_df = spark_df.withColumn(
-        "IsWeekend", when(col("DayOfWeek").isin([1, 7]), 1).otherwise(0)
-    )
-
-    window_spec = Window.partitionBy("TAC_AREA_NAME").orderBy("INTERVALSTARTTIME_GMT")
-    spark_df = spark_df.withColumn("PrevHourLoad", lag(col("MW")).over(window_spec))
-    spark_df = spark_df.withColumn("PrevDayLoad", lag(col("MW"), 24).over(window_spec))
-    spark_df = spark_df.withColumn(
-        "PrevWeekLoad", lag(col("MW"), 24 * 7).over(window_spec)
-    )
-    spark_df = spark_df.withColumn(
-        "MovingAvg3Hours", avg(col("MW")).over(window_spec.rowsBetween(-3, 0))
-    )
-    spark_df = spark_df.withColumn(
-        "MovingAvg7Days", avg(col("MW")).over(window_spec.rowsBetween(-24 * 7, 0))
-    )
-
-    median_prev_day = spark_df.select(percentile_approx("PrevDayLoad", 0.5)).collect()[
-        0
-    ][0]
-    median_prev_week = spark_df.select(
-        percentile_approx("PrevWeekLoad", 0.5)
-    ).collect()[0][0]
-    median_moving_avg_3_hours = spark_df.select(
-        percentile_approx("MovingAvg3Hours", 0.5)
-    ).collect()[0][0]
-    median_moving_avg_7_days = spark_df.select(
-        percentile_approx("MovingAvg7Days", 0.5)
-    ).collect()[0][0]
-
-    spark_df = spark_df.withColumn(
-        "PrevHourLoad",
-        when(spark_df["PrevHourLoad"].isNull(), prev_hour_load_value).otherwise(
-            spark_df["PrevHourLoad"]
-        ),
-    )
-    spark_df = spark_df.na.fill(
-        {
-            "PrevDayLoad": median_prev_day,
-            "PrevWeekLoad": median_prev_week,
-            "MovingAvg3Hours": median_moving_avg_3_hours,
-            "MovingAvg7Days": median_moving_avg_7_days,
-        }
-    )
-
-    return spark_df
-
-
-

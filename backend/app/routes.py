@@ -30,17 +30,20 @@ def display_today():
     spark_df = preprocess_data(spark, df)
 
     # Get the latest 24 hours of data
-    latest_time_str = spark_df.agg({"INTERVALSTARTTIME_GMT": "max"}).collect()[0][0]
+    latest_time_str = spark_df.agg({"interval_start_time": "max"}).collect()[0][0]
 
-    # Assuming the INTERVALSTARTTIME_GMT is in 'yyyy-MM-ddTHH:mm:ss-00:00' format
-    latest_time = datetime.strptime(latest_time_str, '%Y-%m-%dT%H:%M:%S%z')
+    # Checks if INTERVALSTARTTIME_GMT is in 'yyyy-MM-ddTHH:mm:ss-00:00' format
+    if isinstance(latest_time_str, datetime):
+        latest_time = latest_time_str
+    else:
+        latest_time = datetime.strptime(latest_time_str, '%Y-%m-%dT%H:%M:%S%z')
     start_time = latest_time - timedelta(hours=24)
 
-    recent_df = spark_df.filter(spark_df["INTERVALSTARTTIME_GMT"] > start_time.strftime('%Y-%m-%dT%H:%M:%S%z'))
+    recent_df = spark_df.filter(spark_df["interval_start_time"] > start_time.strftime('%Y-%m-%dT%H:%M:%S%z'))
 
     # Collect data to Python list
-    recent_data = recent_df.select("INTERVALSTARTTIME_GMT", "MW").orderBy("INTERVALSTARTTIME_GMT").collect()
-    response_data = [{"time": row["INTERVALSTARTTIME_GMT"], "MW": row["MW"]} for row in recent_data]
+    recent_data = recent_df.select("interval_start_time", "MW").orderBy("interval_start_time").collect()
+    response_data = [{"time": row["interval_start_time"], "MW": row["MW"]} for row in recent_data]
 
     return jsonify(response_data)
 
