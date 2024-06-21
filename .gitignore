@@ -1,0 +1,39 @@
+# Bytecode files
+__pycache__/
+*.py[cod]
+backend/__pycache__/
+
+# Environment files
+.env
+*.env
+
+# Virtual Environment folders
+venv/
+.venv/
+
+# Logs
+*.log
+
+# Configuration files with sensitive info
+backend/app/config.json
+data/scripts/config.ini
+backend/config.py
+
+# Ignore machine learning model files
+backend/models/
+
+# Frontend modules
+frontend/node_modules/
+
+# Data folders and files
+data/
+
+# Ignore editor folders
+.vscode/
+.idea/
+
+# Pytest cache
+backend/.pytest_cache/
+
+# macOS system files
+.DS_Store
